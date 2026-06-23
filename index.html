@@ -82,8 +82,12 @@
       function allocChunk() {
         var bytes = CHUNK_MB * 1024 * 1024;
         var buf = new Uint8Array(bytes);
-        // touch every page (~4KB) so the memory is actually committed, not lazily reserved
-        for (var i = 0; i < bytes; i += 4096) buf[i] = (i & 0xff);
+        // fill EVERY byte with incompressible random data so iOS's memory
+        // compressor can't reclaim it -> real physical footprint, real pressure.
+        // crypto.getRandomValues caps at 65536 bytes per call, so chunk it.
+        for (var off = 0; off < bytes; off += 65536) {
+          crypto.getRandomValues(buf.subarray(off, Math.min(off + 65536, bytes)));
+        }
         leaked.push(buf);
       }
 
