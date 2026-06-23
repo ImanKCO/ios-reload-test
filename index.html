@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iOS memory-pressure reload test</title>
+    <style>
+      body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #fff; }
+      h1 { font-size: 18px; }
+      .big { font-size: 40px; font-weight: 700; margin: 8px 0; }
+      .muted { color: #666; font-size: 13px; }
+      pre { background: #f4f4f4; padding: 12px; border-radius: 8px; font-size: 11px; overflow-x: auto; }
+      button { font-size: 16px; padding: 10px 16px; margin: 4px 4px 12px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>iOS memory-pressure reload test</h1>
+    <p class="muted">
+      Leave this page open and untouched. It allocates memory continuously. If iOS Safari
+      discards pages under memory pressure, this tab will reload on its own — and the journal
+      below will record it. Compare against checkout.
+    </p>
+
+    <div>Allocated: <span class="big" id="mb">0</span> MB</div>
+    <div class="muted">Alive: <span id="alive">0</span>s &nbsp;·&nbsp; ticks: <span id="ticks">0</span></div>
+
+    <p>
+      <button id="pause">Pause</button>
+      <button id="reset">Reset journal</button>
+    </p>
+
+    <h1>Reload journal</h1>
+    <pre id="journal"></pre>
+
+    <script>
+      // ---- reload journal (same one used in checkout.html) ----
+      (function () {
+        try {
+          var K = '__leakJournal';
+          var j = JSON.parse(localStorage.getItem(K) || '[]');
+          var now = Date.now();
+          var nav = performance.getEntriesByType('navigation')[0] || {};
+          var rec = {
+            at: new Date(now).toISOString(),
+            navType: nav.type,
+            prevHadCleanExit: j.length ? j[j.length - 1].cleanExit === true : null,
+            prevLastState: j.length ? j[j.length - 1].lastState : null,
+            prevMaxMB: j.length ? j[j.length - 1].maxMB : null,
+            lastHeartbeatAgoMs: j.length ? now - (j[j.length - 1].lastBeat || now) : null,
+            cleanExit: false,
+            startState: document.visibilityState,
+            lastState: document.visibilityState,
+            maxMB: 0,
+            lastBeat: now,
+          };
+          j.push(rec);
+          localStorage.setItem(K, JSON.stringify(j.slice(-30)));
+
+          window.__journalSave = function (mut) {
+            var a = JSON.parse(localStorage.getItem(K) || '[]');
+            if (a.length) { mut(a[a.length - 1]); localStorage.setItem(K, JSON.stringify(a)); }
+          };
+          addEventListener('visibilitychange', function () {
+            window.__journalSave(function (r) { r.lastState = document.visibilityState; });
+          });
+          addEventListener('pagehide', function () {
+            window.__journalSave(function (r) { r.cleanExit = true; });
+          });
+          document.getElementById('journal').textContent =
+            JSON.stringify(JSON.parse(localStorage.getItem(K) || '[]'), null, 2);
+        } catch (e) {}
+      })();
+
+      // ---- the leak: keep references so GC can't reclaim, and TOUCH the memory ----
+      var CHUNK_MB = 10;          // allocate this many MB per tick
+      var TICK_MS = 250;          // how often to allocate
+      var leaked = [];            // global retention -> never collected
+      var start = Date.now();
+      var ticks = 0;
+      var paused = false;
+
+      function allocChunk() {
+        var bytes = CHUNK_MB * 1024 * 1024;
+        var buf = new Uint8Array(bytes);
+        // touch every page (~4KB) so the memory is actually committed, not lazily reserved
+        for (var i = 0; i < bytes; i += 4096) buf[i] = (i & 0xff);
+        leaked.push(buf);
+      }
+
+      var leakTimer = setInterval(function () {
+        if (paused) return;
+        try { allocChunk(); }
+        catch (e) { /* JS-level OOM: stop allocating, let the page sit at peak */ clearInterval(leakTimer); }
+        ticks++;
+        var mb = leaked.length * CHUNK_MB;
+        document.getElementById('mb').textContent = mb;
+        document.getElementById('ticks').textContent = ticks;
+        if (window.__journalSave) window.__journalSave(function (r) {
+          if (mb > (r.maxMB || 0)) r.maxMB = mb;
+        });
+      }, TICK_MS);
+
+      // 1s heartbeat: updates lastBeat/lastState so a frozen/killed page is detectable
+      setInterval(function () {
+        document.getElementById('alive').textContent = Math.round((Date.now() - start) / 1000);
+        if (window.__journalSave) window.__journalSave(function (r) {
+          r.lastBeat = Date.now(); r.lastState = document.visibilityState;
+        });
+      }, 1000);
+
+      document.getElementById('pause').onclick = function () {
+        paused = !paused; this.textContent = paused ? 'Resume' : 'Pause';
+      };
+      document.getElementById('reset').onclick = function () {
+        localStorage.removeItem('__leakJournal'); location.reload();
+      };
+    </script>
+  </body>
+</html>
