@@ -16,7 +16,7 @@
   <body>
     <h1>iOS memory-pressure reload test</h1>
     <div style="background:#0a0;color:#fff;padding:6px 10px;border-radius:6px;display:inline-block;font-weight:700">
-      VERSION: v2 — incompressible random fill
+      VERSION: v3 — incompressible + speed controls
     </div>
     <p class="muted">
       Leave this page open and untouched. It allocates memory continuously. If iOS Safari
@@ -26,13 +26,17 @@
 
     <div>Allocated: <span class="big" id="mb">0</span> MB</div>
     <div class="muted">Alive: <span id="alive">0</span>s &nbsp;·&nbsp; ticks: <span id="ticks">0</span></div>
+    <div class="muted">Rate: <span id="rate">40</span> MB/s &nbsp;(<span id="chunk">10</span> MB every 250ms)</div>
 
     <p>
+      <button id="slower">&minus; slower</button>
+      <button id="faster">+ faster</button>
       <button id="pause">Pause</button>
       <button id="reset">Reset journal</button>
     </p>
 
     <h1>Reload journal</h1>
+    <p><button id="copy">Copy journal</button> <span class="muted" id="copied"></span></p>
     <pre id="journal"></pre>
 
     <script>
@@ -75,12 +79,21 @@
       })();
 
       // ---- the leak: keep references so GC can't reclaim, and TOUCH the memory ----
-      var CHUNK_MB = 10;          // allocate this many MB per tick
-      var TICK_MS = 250;          // how often to allocate
-      var leaked = [];            // global retention -> never collected
+      var STEPS = [1, 2, 5, 10, 20, 50, 100, 200];  // MB per tick options
+      var stepIdx = 3;                               // start at 10 MB/tick
+      var CHUNK_MB = STEPS[stepIdx];                 // allocate this many MB per tick
+      var TICK_MS = 250;                             // how often to allocate
+      var leaked = [];                               // global retention -> never collected
       var start = Date.now();
       var ticks = 0;
       var paused = false;
+
+      function refreshRate() {
+        CHUNK_MB = STEPS[stepIdx];
+        document.getElementById('chunk').textContent = CHUNK_MB;
+        document.getElementById('rate').textContent = Math.round(CHUNK_MB * (1000 / TICK_MS));
+      }
+      refreshRate();
 
       function allocChunk() {
         var bytes = CHUNK_MB * 1024 * 1024;
@@ -120,6 +133,42 @@
       };
       document.getElementById('reset').onclick = function () {
         localStorage.removeItem('__leakJournal'); location.reload();
+      };
+      document.getElementById('faster').onclick = function () {
+        if (stepIdx < STEPS.length - 1) stepIdx++; refreshRate();
+      };
+      document.getElementById('slower').onclick = function () {
+        if (stepIdx > 0) stepIdx--; refreshRate();
+      };
+
+      // keep the on-screen journal fresh so "Copy" always grabs current data
+      function renderJournal() {
+        try {
+          document.getElementById('journal').textContent =
+            localStorage.getItem('__leakJournal') || '[]';
+        } catch (e) {}
+      }
+      setInterval(renderJournal, 1000);
+      renderJournal();
+
+      document.getElementById('copy').onclick = function () {
+        var text = localStorage.getItem('__leakJournal') || '[]';
+        var note = document.getElementById('copied');
+        var ok = function () { note.textContent = 'copied!'; setTimeout(function () { note.textContent = ''; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(ok, function () {
+            // fallback for non-secure contexts / older WebKit
+            var ta = document.createElement('textarea');
+            ta.value = text; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); ok(); } catch (e) { note.textContent = 'copy failed — select manually'; }
+            document.body.removeChild(ta);
+          });
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); ok(); } catch (e) { note.textContent = 'copy failed — select manually'; }
+          document.body.removeChild(ta);
+        }
       };
     </script>
   </body>
